@@ -35,7 +35,11 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-# sys.path.append('/root/yangxin/codebase/3D_Playground/GSDF')
+# cuda ampere and pytorch 2 optimizations
+torch.set_float32_matmul_precision('medium')
+
+
+
 
 
 def adjust_text_embeddings(embeddings, azimuth, guidance_opt):
@@ -452,7 +456,7 @@ def video_inference(iteration, scene : Scene, renderFunc, renderArgs):
     if config['cameras'] and len(config['cameras']) > 0:
         img_frames = []
         depth_frames = []
-        print("Generating Video using", len(config['cameras']), "different view points")
+        print("Generating Video using", len(config['cameras']), "different view points") #TODO: modify for post rendering
         for idx, viewpoint in enumerate(config['cameras']):
             render_out = renderFunc(viewpoint, scene.gaussians, *renderArgs, test=True)
             rgb,depth = render_out["render"],render_out["depth"]
