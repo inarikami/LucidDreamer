@@ -101,11 +101,11 @@ def svd_distill(
     save_path: str = "svd_distill.safetensors",
 ):
     pipe_base = StableDiffusionPipeline.from_pretrained(
-        base_model, torch_dtype=torch.float16
+        base_model, torch_dtype=torch.bfloat16
     ).to(device)
 
     pipe_tuned = StableDiffusionPipeline.from_pretrained(
-        target_model, torch_dtype=torch.float16
+        target_model, torch_dtype=torch.bfloat16
     ).to(device)
 
     # Inject unet

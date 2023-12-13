@@ -1,6 +1,6 @@
 from audioop import mul
 from transformers import CLIPTextModel, CLIPTokenizer, logging
-from diffusers import StableDiffusionPipeline, DiffusionPipeline, DDPMScheduler, DDIMScheduler, EulerDiscreteScheduler, \
+from diffusers import StableDiffusionXLPipeline, DiffusionPipeline, DDPMScheduler, DDIMScheduler, EulerDiscreteScheduler, \
                       EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler, ControlNetModel, \
                       DDIMInverseScheduler, UNet2DConditionModel
 from diffusers.utils.import_utils import is_xformers_available
@@ -60,7 +60,7 @@ class StableDiffusion(nn.Module):
         super().__init__()
 
         self.device = device
-        self.precision_t = torch.float16 if fp16 else torch.float32
+        self.precision_t = torch.bfloat16 if fp16 else torch.float32
 
         print(f'[INFO] loading stable diffusion...')
 
@@ -70,13 +70,14 @@ class StableDiffusion(nn.Module):
         is_safe_tensor = guidance_opt.is_safe_tensor
         base_model_key = "stabilityai/stable-diffusion-v1-5" if guidance_opt.base_model_key is None else guidance_opt.base_model_key # for finetuned model only
 
-        if is_safe_tensor:
-            pipe = StableDiffusionPipeline.from_single_file(model_key, use_safetensors=True, torch_dtype=self.precision_t, load_safety_checker=False)
-        else:
-            pipe = StableDiffusionPipeline.from_pretrained(model_key, torch_dtype=self.precision_t)
+
+        # pipe = StableDiffusionXLPipeline.from_pretrained(model_key, torch_dtype=self.precision_t, local_files_only=True)
+        pipe = StableDiffusionXLPipeline.from_pretrained(model_key, torch_dtype=self.precision_t, variant="fp16", 
+                use_safetensors=True, add_watermarker=False, local_files_only=True, safety_checker=None
+            )
 
         self.ism = not guidance_opt.sds
-        self.scheduler = DDIMScheduler.from_pretrained(model_key if not is_safe_tensor else base_model_key, subfolder="scheduler", torch_dtype=self.precision_t)
+        self.scheduler = DDIMScheduler.from_config(pipe.scheduler.config, rescale_betas_zero_snr=True, torch_dtype=self.precision_t)
         self.sche_func = ddim_step
 
         if use_control_net:
@@ -111,11 +112,11 @@ class StableDiffusion(nn.Module):
             tune_lora_scale(pipe.text_encoder, 1.00)
 
         self.pipe = pipe
+
         self.vae = pipe.vae
         self.tokenizer = pipe.tokenizer
         self.text_encoder = pipe.text_encoder
         self.unet = pipe.unet
-        
         self.num_train_timesteps = num_train_timesteps if num_train_timesteps is not None else self.scheduler.config.num_train_timesteps        
         self.scheduler.set_timesteps(self.num_train_timesteps, device=device)
 
@@ -194,8 +195,35 @@ class StableDiffusion(nn.Module):
                 unet_output = cond + cfg * (uncond - cond) # reverse cfg to enhance the distillation
             else:
                 timestep_model_input = self.timesteps[cur_ind_t].reshape(1, 1).repeat(cur_noisy_lat_.shape[0], 1).reshape(-1)
-                unet_output = unet(cur_noisy_lat_, timestep_model_input, 
-                                    encoder_hidden_states=uncond_text_embedding).sample
+
+                #debug nontype is not iterable
+                print("uncond_text_embedding",uncond_text_embedding.shape)
+                print("timestep_model_input",timestep_model_input.shape)
+                print("cur_noisy_lat_",cur_noisy_lat_.shape)
+                # full tensor check_inputs
+                # print(self.unet.height, self.unet.width)
+
+                # print(self.unet
+
+                from torchinfo import summary
+                # sample_input = (uncond_text_embedding, timestep_model_input, cur_noisy_lat_)
+                summary(unet,  input_data=(cur_noisy_lat_, timestep_model_input, uncond_text_embedding))
+                #print input and output shapes of the unet
+                with torch.no_grad():
+                    try:
+                        unet_output, _ = unet.forward(cur_noisy_lat_, timestep_model_input, encoder_hidden_states=uncond_text_embedding, added_cond_kwargs={})
+
+                        # Optionally, check for NaNs or other issues in the output
+                        if torch.isnan(unet_output).any():
+                            print("NaNs detected in the output!")
+                        else:
+                            print("No NaNs detected in the output.")
+
+                    except Exception as e:
+                        print("Error during forward pass:", e)
+
+                unet_output = unet(cur_noisy_lat_, timestep_model_input, # replace with newer format
+                                    encoder_hidden_states=uncond_text_embedding)
 
             pred_scores.append((cur_ind_t, unet_output))
 
@@ -216,15 +244,16 @@ class StableDiffusion(nn.Module):
 
 
     @torch.no_grad()
-    def get_text_embeds(self, prompt, resolution=(512, 512)):
-        inputs = self.tokenizer(prompt, padding='max_length', max_length=self.tokenizer.model_max_length, truncation=True, return_tensors='pt')
-        embeddings = self.text_encoder(inputs.input_ids.to(self.device))[0]
+    def get_text_embeds(self, prompt, neg_prompt: Optional[str] = None, resolution=(1024, 1024)):
+        embeddings = self.pipe.encode_prompt(prompt, neg_prompt, device=self.device)[0] #TODO test
+        # inputs = self.tokenizer(prompt, padding='max_length', max_length=self.tokenizer.model_max_length, truncation=True, return_tensors='pt')
+        # embeddings = self.text_encoder(inputs.input_ids.to(self.device))[0]
         return embeddings
 
     def train_step_perpneg(self, text_embeddings, pred_rgb, pred_depth=None, pred_alpha=None,
                            grad_scale=1,use_control_net=False,
                            save_folder:Path=None, iteration=0, warm_up_rate = 0, weights = 0, 
-                           resolution=(512, 512), guidance_opt=None,as_latent=False, embedding_inverse = None):
+                           resolution=(1024, 1024), guidance_opt=None,as_latent=False, embedding_inverse = None):
 
 
         # flip aug
@@ -285,7 +314,7 @@ class StableDiffusion(nn.Module):
 
             latent_model_input = self.scheduler.scale_model_input(latent_model_input, tt[0])
             if use_control_net:
-                pred_depth_input = pred_depth_input[None, :, ...].repeat(1 + K, 1, 3, 1, 1).reshape(-1, 3, 512, 512).half()
+                pred_depth_input = pred_depth_input[None, :, ...].repeat(1 + K, 1, 3, 1, 1).reshape(-1, 3, 1024, 1024).half()
                 down_block_res_samples, mid_block_res_sample = self.controlnet_depth(
                     latent_model_input,
                     tt,
@@ -346,7 +375,7 @@ class StableDiffusion(nn.Module):
     def train_step(self, text_embeddings, pred_rgb, pred_depth=None, pred_alpha=None,
                     grad_scale=1,use_control_net=False,
                     save_folder:Path=None, iteration=0, warm_up_rate = 0,
-                    resolution=(512, 512), guidance_opt=None,as_latent=False, embedding_inverse = None):
+                    resolution=(1024, 1024), guidance_opt=None,as_latent=False, embedding_inverse = None):
 
         pred_rgb, pred_depth, pred_alpha = self.augmentation(pred_rgb, pred_depth, pred_alpha)
 
@@ -367,6 +396,8 @@ class StableDiffusion(nn.Module):
         else:
             noise = torch.randn((latents.shape[0], 4, resolution[0] // 8, resolution[1] // 8, ), dtype=latents.dtype, device=latents.device, generator=self.noise_gen) + 0.1 * torch.randn((1, 4, 1, 1), device=latents.device).repeat(latents.shape[0], 1, 1, 1)
 
+
+        #investigate these shapess
         text_embeddings = text_embeddings[:, :, ...]
         text_embeddings = text_embeddings.reshape(-1, text_embeddings.shape[-2], text_embeddings.shape[-1]) # make it k+1, c * t, ...
 
@@ -411,7 +442,7 @@ class StableDiffusion(nn.Module):
 
             latent_model_input = self.scheduler.scale_model_input(latent_model_input, tt[0])
             if use_control_net:
-                pred_depth_input = pred_depth_input[None, :, ...].repeat(1 + K, 1, 3, 1, 1).reshape(-1, 3, 512, 512).half()
+                pred_depth_input = pred_depth_input[None, :, ...].repeat(1 + K, 1, 3, 1, 1).reshape(-1, 3, 1024, 1024).half()
                 down_block_res_samples, mid_block_res_sample = self.controlnet_depth(
                     latent_model_input,
                     tt,
@@ -479,7 +510,16 @@ class StableDiffusion(nn.Module):
         # imgs: [B, 3, H, W]
         imgs = 2 * imgs - 1
 
-        posterior = self.vae.encode(imgs.to(self.vae.dtype)).latent_dist
+        imgs = imgs.to(self.vae.dtype)
+
+        #print some vae encoder weights to confirm that they are not nan
+        print(self.vae.encoder.conv_in.weight)
+
+        #NOTE: turns out everything is ok and this is a known issue with SDXL and float 16 dtypes... the solution is 
+        # use 32 or bf16 or https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/blob/main/README.md
+
+        posterior = self.vae.encode(imgs).latent_dist
+        # posterior = self.vae.encode(imgs.to(self.vae.dtype)).latent_dist #some fuckery with SDXL
         kl_divergence = posterior.kl()
 
         latents = posterior.sample() * self.vae.config.scaling_factor

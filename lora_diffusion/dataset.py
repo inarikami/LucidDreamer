@@ -128,7 +128,7 @@ class PivotalTuningDatasetCapation(Dataset):
         tokenizer,
         token_map: Optional[dict] = None,
         use_template: Optional[str] = None,
-        size=512,
+        size=1024,
         h_flip=True,
         color_jitter=False,
         resize=True,

@@ -246,7 +246,7 @@ def load_and_save_masks_and_captions(
     output_dir: str,
     caption_text: Optional[str] = None,
     target_prompts: Optional[Union[List[str], str]] = None,
-    target_size: int = 512,
+    target_size: int = 1024,
     crop_based_on_salience: bool = True,
     use_face_detection_instead: bool = False,
     temp: float = 1.0,

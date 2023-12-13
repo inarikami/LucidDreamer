@@ -189,7 +189,7 @@ def visualize_progress(
         alls = path_alls
 
     pipe = StableDiffusionPipeline.from_pretrained(
-        model_id, torch_dtype=torch.float16
+        model_id, torch_dtype=torch.bfloat16
     ).to(device)
 
     print(f"Found {len(alls)} checkpoints")

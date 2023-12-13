@@ -221,8 +221,8 @@ class GenerateCamParams(ParamGroup):
         self.angle_front =60
         self.render_45 = True
         self.uniform_sphere_rate = 0
-        self.image_w = 512
-        self.image_h = 512 # 512
+        self.image_w = 1024
+        self.image_h = 1024 # 1024x1024
         self.SSAA = 1
         self.init_num_pts = 100_000
         self.default_polar = 90

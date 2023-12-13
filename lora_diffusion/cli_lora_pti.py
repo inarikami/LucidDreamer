@@ -707,7 +707,7 @@ def train(
     placeholder_token_at_data: Optional[str] = None,
     initializer_tokens: Optional[str] = None,
     seed: int = 42,
-    resolution: int = 512,
+    resolution: int = 1024,
     color_jitter: bool = True,
     train_batch_size: int = 1,
     sample_batch_size: int = 1,
